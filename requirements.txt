@@ -1,0 +1,15 @@
+llama-index
+llama-parse
+llama-hub
+llama-index-vector-stores-redis
+llama-index-storage-docstore-redis
+llama-index-storage-chat-store-redis
+llama-index-llms-bedrock
+llama-index-embeddings-bedrock
+llama-index-embeddings-huggingface
+sentence_transformers
+testcontainers
+transformers
+torch
+accelerate
+llama-index-llms-huggingface
