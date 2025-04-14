@@ -27,7 +27,7 @@ llm = HuggingFaceLLM(
     max_new_tokens=256,
     generate_kwargs={
         "temperature": 0.7,
-        "top_p": 0.95,
+        "top_p": 0.95
     },
     system_prompt="You are a helpful AI assistant that answers questions about the Chevy Colorado 2022."
 )

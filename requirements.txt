@@ -13,3 +13,6 @@ transformers
 torch
 accelerate
 llama-index-llms-huggingface
+temporalio
+fastapi
+uvicorn
