@@ -1,15 +1,73 @@
 # Redis Vector Library Demo with LlamaIndex
 
-A demonstration of using Redis as a vector store with LlamaIndex for RAG (Retrieval Augmented Generation) applications. This project showcases how to build a question-answering system using Redis Vector Library, LlamaIndex, and open-source language models.
+A demonstration of using Redis as a vector store with LlamaIndex for RAG (Retrieval Augmented Generation) applications. This project showcases how to build a question-answering system using Redis Vector Library, LlamaIndex, and open-source language models, orchestrated by Temporal workflows.
 
 ## Architecture
-[Coming Soon] - Architecture diagram showing the interaction between Redis Vector Store, LlamaIndex, and the RAG pipeline.
+
+```mermaid
+graph TD
+    subgraph Client
+        UI[Web UI]
+        API[FastAPI Server]
+    end
+
+    subgraph Temporal
+        WF[RAG Workflow]
+        ACT[RAG Activity]
+        WK[Worker]
+    end
+
+    subgraph RAG Pipeline
+        LLM[TinyLlama LLM]
+        EMB[BGE Embeddings]
+        VS[Redis Vector Store]
+        CACHE[Semantic Cache]
+    end
+
+    %% Connections
+    UI -->|HTTP Request| API
+    API -->|Start Workflow| WF
+    WF -->|Execute| ACT
+    ACT -->|Process| WK
+    WK -->|Query| LLM
+    WK -->|Embed| EMB
+    WK -->|Store/Retrieve| VS
+    WK -->|Cache| CACHE
+    VS -->|Vectors| EMB
+    CACHE -->|Cached Results| WK
+
+    %% Styling
+    classDef default fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef temporal fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef rag fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    
+    class WF,ACT,WK temporal;
+    class LLM,EMB,VS,CACHE rag;
+```
+
+The architecture consists of three main components:
+
+1. **Client Layer**
+   - Web UI for user interaction
+   - FastAPI server handling HTTP requests
+
+2. **Temporal Workflow Layer**
+   - RAG Workflow orchestrating the process
+   - RAG Activity executing the actual work
+   - Worker processing the tasks
+
+3. **RAG Pipeline Layer**
+   - TinyLlama LLM for text generation
+   - BGE Embeddings for text vectorization
+   - Redis Vector Store for document storage
+   - Semantic Cache for response optimization
 
 ## Prerequisites
 
 - Python 3.8+
 - Docker
 - Git
+- Temporal CLI (for local development)
 
 ## Quick Start
 
@@ -32,28 +90,64 @@ docker run -d --name redis \
     redis/redis-stack:latest
 ```
 
-4. **Verify Redis Connection**
+4. **Start Temporal Server (Local Development)**
+```bash
+# Install Temporal CLI if not already installed
+brew install temporal
+
+# Start Temporal server
+temporal server start-dev
+```
+
+5. **Verify Redis Connection**
 ```bash
 redis-cli ping
 # Should return PONG
 ```
 
-5. **Run Data Ingestion**
+6. **Run Data Ingestion**
 ```bash
 python ingestion.py
 ```
 
-6. **Start the Agent**
+7. **Start the Worker**
 ```bash
-python agent.py
+python worker.py
+```
+
+8. **Start the API Server**
+```bash
+uvicorn main:app --reload
 ```
 
 ## Project Structure
 
 - `ingestion.py`: Handles document ingestion and vector store setup
 - `agent.py`: Implements the RAG agent with LlamaIndex
+- `worker.py`: Temporal worker for processing RAG queries
+- `workflows/`: Contains Temporal workflow definitions
+- `activities/`: Contains Temporal activity implementations
 - `data/`: Directory for your documents
 - `requirements.txt`: Project dependencies
+
+## API Endpoints
+
+### Submit a Query
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Your question here"}'
+```
+
+### Get Query Result
+```bash
+curl http://localhost:8000/query/{workflow_id}
+```
+
+### Get Query History
+```bash
+curl http://localhost:8000/history/{workflow_id}
+```
 
 ## Verifying the Setup
 
@@ -73,11 +167,14 @@ FT.INFO docs
 FT.SEARCH docs "*" LIMIT 0 0
 ```
 
-### Test the Agent
-The agent supports both interactive mode and predefined queries. When running `agent.py`, you can:
-- Use the predefined test queries
-- Enter interactive mode to ask your own questions
-- Type 'quit' to exit
+### Check Temporal Status
+```bash
+# View Temporal server status
+temporal server status
+
+# View running workflows
+temporal workflow list
+```
 
 ## Components
 
@@ -86,6 +183,7 @@ The agent supports both interactive mode and predefined queries. When running `a
 - **Language Model**: TinyLlama-1.1B-Chat-v1.0
 - **Framework**: LlamaIndex for RAG pipeline
 - **Caching**: Semantic caching for response optimization
+- **Workflow Engine**: Temporal for orchestration
 
 ## Troubleshooting
 
@@ -100,14 +198,25 @@ docker ps | grep redis
 docker restart redis
 ```
 
-2. **Port Conflicts**
+2. **Temporal Server Issues**
 ```bash
-# Check if ports are in use
-lsof -i :6379
-lsof -i :8001
+# Check Temporal server status
+temporal server status
+
+# Restart Temporal server if needed
+temporal server start-dev
 ```
 
-3. **Memory Issues**
+3. **Port Conflicts**
+```bash
+# Check if ports are in use
+lsof -i :6379  # Redis
+lsof -i :8001  # Redis UI
+lsof -i :7233  # Temporal
+lsof -i :8000  # FastAPI
+```
+
+4. **Memory Issues**
 - Ensure you have enough RAM for the models
 - Consider using smaller models if needed
 
@@ -129,6 +238,7 @@ lsof -i :8001
 - LlamaIndex
 - HuggingFace
 - TinyLlama
+- Temporal
 
 ## Coming Soon
 
@@ -136,3 +246,4 @@ lsof -i :8001
 - [ ] Performance Benchmarks
 - [ ] Advanced Configuration Guide
 - [ ] Docker Compose Setup
+- [ ] Temporal Workflow Monitoring Dashboard
