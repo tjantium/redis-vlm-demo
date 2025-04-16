@@ -10,9 +10,10 @@ import time
 app = FastAPI()
 temporal_client: Client = None
 
-# Add request model
+# Update request model to include optional context
 class QueryRequest(BaseModel):
     query: str
+    context: str | None = None  # Make context optional with None as default
 
 @app.on_event("startup")
 async def startup_event():
@@ -27,14 +28,21 @@ async def process_query(request: QueryRequest):
     workflow_id = f"rag-{timestamp}-{unique_id}"
     
     try:
-        # Start the workflow
+        # Start the workflow with context
         handle = await temporal_client.start_workflow(
             RAGWorkflow.run,
-            RAGWorkflowParams(query=request.query),
+            RAGWorkflowParams(
+                query=request.query,
+                context=request.context  # Pass the context to the workflow
+            ),
             id=workflow_id,
             task_queue=TEMPORAL_TASK_QUEUE
         )
-        return {"workflow_id": workflow_id, "status": "started"}
+        return {
+            "workflow_id": workflow_id, 
+            "status": "started",
+            "context_provided": request.context is not None
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -44,7 +52,15 @@ async def get_query_result(workflow_id: str):
         handle = temporal_client.get_workflow_handle(workflow_id)
         result = await handle.query(RAGWorkflow.get_response)
         status = await handle.query(RAGWorkflow.get_status)
-        return {"workflow_id": workflow_id, "status": status, "result": result}
+        events = await handle.query(RAGWorkflow.get_events)
+        metrics = await handle.query(RAGWorkflow.get_metrics)
+        return {
+            "workflow_id": workflow_id,
+            "status": status,
+            "result": result,
+            "metrics": metrics,
+            "events": events
+        }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 

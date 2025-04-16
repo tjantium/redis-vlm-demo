@@ -25,6 +25,8 @@ class RAGActivities:
     async def process_rag_query(self, params: RAGActivityParams) -> str:
         try:
             logger.info(f"Processing RAG query: {params.query}")
+            if params.context:
+                logger.info(f"With context: {params.context}")
             
             # Initialize agent if needed
             if not self.agent:
@@ -35,7 +37,12 @@ class RAGActivities:
             # Add timeout for the agent response with proper error handling
             try:
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(chat_with_agent, self.agent, params.query),
+                    asyncio.to_thread(
+                        chat_with_agent, 
+                        self.agent, 
+                        params.query,
+                        params.context
+                    ),
                     timeout=30.0
                 )
                 logger.info("Query processed successfully")
