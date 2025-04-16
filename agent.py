@@ -13,6 +13,8 @@ from llama_index.core.response_synthesizers import get_response_synthesizer
 from llama_index.core.llms import ChatMessage, MessageRole
 from redisvl.extensions.llmcache import SemanticCache
 from redisvl.utils.vectorize import HFTextVectorizer
+from pydantic import BaseModel
+import logging
 
 # Initialize embedding model
 embed_model = HuggingFaceEmbedding(
@@ -59,6 +61,8 @@ Settings.embed_model = embed_model
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 
+logger = logging.getLogger(__name__)
+
 def build_rag_agent(vector_store):
     # Create retriever with similarity top-k
     retriever = VectorIndexRetriever(
@@ -97,8 +101,9 @@ def build_rag_agent(vector_store):
             metadata=ToolMetadata(
                 name="car_manual",
                 description=(
-                    "Provides detailed information about the Chevy Colorado 2022 car. "
-                    "Use specific questions to get accurate information from the manual."
+                    "Provides detailed information about the Chevy Colorado 2022. "
+                    "Use specific questions to get accurate information from the manual. "
+                    "When context is provided, use it to focus the response on relevant aspects."
                 )
             ),
         )
@@ -110,6 +115,8 @@ def build_rag_agent(vector_store):
         content=(
             "You are a knowledgeable customer support agent for the Chevy Colorado 2022. "
             "Use the car manual tool to provide accurate and detailed information. "
+            "When context is provided, focus your response on that specific aspect. "
+            "If no context is provided, give a comprehensive answer. "
             "If you're not sure about something, say so rather than making assumptions."
         )
     )
@@ -125,11 +132,19 @@ def build_rag_agent(vector_store):
 
     return agent
 
-def chat_with_agent(agent, query: str) -> str:
+def chat_with_agent(agent, query: str, context: str | None = None) -> str:
     try:
-        response = agent.chat(query)
+        # If context is provided, prepend it to the query
+        if context:
+            enhanced_query = f"Context: {context}\nQuestion: {query}"
+            logger.info(f"Enhanced query with context: {enhanced_query}")
+            response = agent.chat(enhanced_query)
+        else:
+            logger.info(f"Processing query without context: {query}")
+            response = agent.chat(query)
         return str(response)
     except Exception as e:
+        logger.error(f"Error processing query: {str(e)}")
         return f"Error processing query: {str(e)}"
 
 # Initialize semantic cache with BGE embeddings
@@ -148,6 +163,10 @@ def invoke_agent(prompt: str) -> str:
     response = agent.chat(prompt)
     cache.store(prompt=prompt, response=response.response)
     return response.response
+
+class QueryRequest(BaseModel):
+    query: str
+    context: str | None = None  # Optional context
 
 if __name__ == "__main__":
     # Import the vector store from ingestion
