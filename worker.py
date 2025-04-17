@@ -4,6 +4,7 @@ from temporalio.client import Client
 from workflows.rag_workflow import RAGWorkflow
 from activities.rag_activities import RAGActivities
 from shared.config import get_temporal_client, TEMPORAL_TASK_QUEUE
+from agent import build_rag_agent, chat_with_agent  # Note: invoke_agent is not imported
 
 async def main():
     # Create the client

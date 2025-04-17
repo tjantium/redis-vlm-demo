@@ -21,17 +21,28 @@ embed_model = HuggingFaceEmbedding(
     model_name="BAAI/bge-small-en-v1.5"
 )
 
-# Initialize LLM with proper chat template
+# Initialize LLM with TinyLlama
 llm = HuggingFaceLLM(
     model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     tokenizer_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     device_map="auto",
     max_new_tokens=256,
+    context_window=2048,
     generate_kwargs={
-        "temperature": 0.7,
-        "top_p": 0.95
+        "temperature": 0.1,
+        "do_sample": True,
+        "top_k": 30,
+        "top_p": 0.9,
+        "repetition_penalty": 1.1
     },
-    system_prompt="You are a helpful AI assistant that answers questions about the Chevy Colorado 2022."
+    system_prompt=(
+        "You are a specialized assistant that ONLY provides factual information about the Chevy Colorado 2022. "
+        "NEVER engage in general conversation or roleplay. "
+        "ONLY use the provided car manual tool to get accurate information. "
+        "ALWAYS give direct, specific answers about the 2022 Chevy Colorado. "
+        "If information is not available in the manual, say so directly. "
+        "Do not make assumptions or provide information about other vehicles."
+    )
 )
 
 # # Option 2: Using TinyLlama (better performance, still accessible)
@@ -56,6 +67,8 @@ llm = HuggingFaceLLM(
 # Set global configurations
 Settings.llm = llm
 Settings.embed_model = embed_model
+Settings.chunk_size = 512
+Settings.chunk_overlap = 50
 
 # Instead, define Redis connection details directly
 REDIS_HOST = "localhost"
@@ -83,17 +96,6 @@ def build_rag_agent(vector_store):
         node_postprocessors=[]
     )
 
-    # Create chat memory
-    chat_storage = RedisChatStore(
-        redis_url=f"redis://{REDIS_HOST}:{REDIS_PORT}", 
-        ttl=300
-    )
-    chat_memory = ChatMemoryBuffer.from_defaults(
-        token_limit=3000,
-        chat_store=chat_storage,
-        chat_store_key="chat_history"
-    )
-
     # Create agent tools
     tools = [
         QueryEngineTool(
@@ -101,33 +103,30 @@ def build_rag_agent(vector_store):
             metadata=ToolMetadata(
                 name="car_manual",
                 description=(
-                    "Provides detailed information about the Chevy Colorado 2022. "
-                    "Use specific questions to get accurate information from the manual. "
-                    "When context is provided, use it to focus the response on relevant aspects."
+                    "This tool provides ONLY factual information about the 2022 Chevy Colorado. "
+                    "Use it to look up specific features, specifications, and details from the manual. "
+                    "Do not engage in conversation or discuss other vehicles. "
+                    "Return direct, factual answers about the 2022 Chevy Colorado only."
                 )
             ),
         )
     ]
-
-    # Update the context using chat message format
-    system_message = ChatMessage(
-        role=MessageRole.SYSTEM,
-        content=(
-            "You are a knowledgeable customer support agent for the Chevy Colorado 2022. "
-            "Use the car manual tool to provide accurate and detailed information. "
-            "When context is provided, focus your response on that specific aspect. "
-            "If no context is provided, give a comprehensive answer. "
-            "If you're not sure about something, say so rather than making assumptions."
-        )
-    )
 
     # Create ReAct agent with system message
     agent = ReActAgent.from_tools(
         tools,
         llm=llm,
         verbose=True,
-        memory=chat_memory,
-        system_message=system_message
+        system_message=ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=(
+                "You are a specialized tool that ONLY provides information about the 2022 Chevy Colorado. "
+                "Your responses must ONLY contain factual details from the car manual. "
+                "Do not engage in conversation, roleplay, or discuss other vehicles. "
+                "If asked about anything not related to the 2022 Chevy Colorado, "
+                "respond with: 'I can only provide information about the 2022 Chevy Colorado.'"
+            )
+        )
     )
 
     return agent
@@ -142,7 +141,33 @@ def chat_with_agent(agent, query: str, context: str | None = None) -> str:
         else:
             logger.info(f"Processing query without context: {query}")
             response = agent.chat(query)
-        return str(response)
+        
+        # Extract the final answer from the ReAct agent's response
+        if hasattr(response, 'response'):
+            response_text = response.response
+            
+            # If response contains "Answer: ", extract everything after it
+            if "Answer: " in response_text:
+                final_answer = response_text.split("Answer: ")[-1].strip()
+                return final_answer
+            
+            # If response contains "Final Answer: ", extract everything after it
+            if "Final Answer: " in response_text:
+                final_answer = response_text.split("Final Answer: ")[-1].strip()
+                return final_answer
+            
+            # Remove any conversation or roleplay patterns
+            response_text = response_text.strip()
+            if "User:" in response_text or "Assistant:" in response_text:
+                return "Error: Invalid response format. Please try again."
+            
+            return response_text.strip()
+            
+        elif hasattr(response, 'content'):
+            return response.content.strip()
+        else:
+            logger.error(f"Unexpected response type: {type(response)}")
+            return "Error: Unexpected response format"
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         return f"Error processing query: {str(e)}"
@@ -152,47 +177,78 @@ cache = SemanticCache(
     name="chevy_cache",
     prefix="cache",
     distance_threshold=0.2,
-    ttl=60,
+    ttl=300,  # Increased TTL to 5 minutes
     vectorizer=HFTextVectorizer(model="BAAI/bge-small-en-v1.5")
 )
 
-def invoke_agent(prompt: str) -> str:
-    if cached_result := cache.check(prompt=prompt):
+def refresh_cache():
+    """Clear the semantic cache to force fresh responses"""
+    try:
+        cache.flush()
+        logger.info("Successfully cleared semantic cache")
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}")
+        return False
+
+def invoke_agent(prompt: str, force_refresh: bool = False) -> str:
+    """
+    Invoke the agent with optional cache refresh
+    Args:
+        prompt: The query prompt
+        force_refresh: If True, bypass cache and store new response
+    """
+    if force_refresh:
+        refresh_cache()
+    
+    if not force_refresh and (cached_result := cache.check(prompt=prompt)):
         response = cached_result[0]['response']
+        # Validate cached response
+        if 'car car car' in response.lower() or len(set(response.split())) < 5:
+            logger.warning("Found corrupted cached response, forcing refresh")
+            refresh_cache()
+            return invoke_agent(prompt, force_refresh=True)
         return response
+        
     response = agent.chat(prompt)
-    cache.store(prompt=prompt, response=response.response)
-    return response.response
+    response_content = response.response if hasattr(response, 'response') else str(response)
+    
+    # Validate response before caching
+    if 'car car car' not in response_content.lower() and len(set(response_content.split())) >= 5:
+        cache.store(prompt=prompt, response=response_content)
+    
+    return response_content
 
 class QueryRequest(BaseModel):
     query: str
-    context: str | None = None  # Optional context
+    context: str | None = None
+    force_refresh: bool = False  # Add option to force cache refresh
 
-if __name__ == "__main__":
-    # Import the vector store from ingestion
-    from ingestion import doc_ingestion_pipeline
+# if __name__ == "__main__":
+#     # Import the vector store from ingestion
+#     from ingestion import doc_ingestion_pipeline
     
-    # Build RAG agent
-    agent = build_rag_agent(doc_ingestion_pipeline.vector_store)
+#     # Build RAG agent
+#     agent = build_rag_agent(doc_ingestion_pipeline.vector_store)
     
-    # Example queries to test the agent
-    test_queries = [
-        "What is the seating capacity of the Chevy Colorado 2022?",
-        "What are the safety features available?",
-        "Tell me about the engine specifications.",
-    ]
+#     # Example queries to test the agent
+#     test_queries = [
+#         "What is the seating capacity of the Chevy Colorado 2022?",
+#         "What are the safety features available?",
+#         "Tell me about the engine specifications.",
+#     ]
     
-    print("\nTesting RAG Agent:")
-    print("=================")
-    for query in test_queries:
-        print(f"\nQuery: {query}")
-        response = chat_with_agent(agent, query)
-        print(f"Response: {response}")
+#     print("\nTesting RAG Agent:")
+#     print("=================")
+#     for query in test_queries:
+#         print(f"\nQuery: {query}")
+#         response = chat_with_agent(agent, query)
+#         print(f"Response: {response}")
 
-    # Interactive mode
-    while True:
-        user_query = input("\nEnter your question (or 'quit' to exit): ")
-        if user_query.lower() == 'quit':
-            break
-        response = chat_with_agent(agent, user_query)
-        print(f"Response: {response}")
+#     # Interactive mode
+#     while True:
+#         user_query = input("\nEnter your question (or 'quit' to exit): ")
+#         if user_query.lower() == 'quit':
+#             break
+#         response = chat_with_agent(agent, user_query)
+#         print(f"Response: {response}")
