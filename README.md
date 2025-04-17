@@ -139,6 +139,50 @@ curl -X POST http://localhost:8000/query \
   -d '{"query": "Your question here"}'
 ```
 
+
+sample queries 
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Tell me about the car features",
+    "context": "Focus on the interior comfort and entertainment systems"
+  }'
+
+-----
+
+
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Tell me about the car features",
+    "context": "Focus on the interior comfort and entertainment systems"
+  }'
+
+-----
+
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What safety features does the car have?",
+    "context": "Specifically about driver assistance systems"
+  }'
+
+
+  ----
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How does the car perform?",
+    "context": "Focus on towing capacity and off-road capabilities"
+  }'
+
+
+```
+
+
+
 ### Get Query Result
 ```bash
 curl http://localhost:8000/query/{workflow_id}
