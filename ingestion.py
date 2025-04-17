@@ -1,3 +1,12 @@
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 from testcontainers.redis import RedisContainer
 from testcontainers.core.container import DockerContainer
 
@@ -21,7 +30,8 @@ REDIS_PORT = 6379
 
 # Since we're using HuggingFace instead of Bedrock, we'll keep that
 embed_model = HuggingFaceEmbedding(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="sentence-transformers/all-MiniLM-L6-v2",  # This model uses 384 dimensions
+    device="cpu"  # Explicitly set device
 )
 
 # Custom index schema for Redis
@@ -39,10 +49,10 @@ custom_schema = IndexSchema.from_dict({
             "type": "vector",
             "name": "vector",
             "attrs": {
-                # Adjusted dims for all-MiniLM-L6-v2 which uses 384 dimensions
-                "dims": 384,
+                "dims": 384,  # all-MiniLM-L6-v2 uses 384 dimensions
                 "algorithm": "flat",
                 "distance_metric": "cosine",
+                "datatype": "FLOAT32"  # Explicitly set datatype
             },
         },
     ],
@@ -98,10 +108,72 @@ def verify_ingestion_cli():
     except Exception as e:
         print(f"Error getting index info: {e}")
 
-# Add this to ingestion.py after the ingestion pipeline runs
-if __name__ == "__main__":
-    # Run ingestion
-    doc_ingestion_pipeline.run(documents=documents, show_progress=True)
+def clear_and_reingest():
+    """Clear existing data and re-ingest documents with new embedding model"""
+    import redis
+    from pathlib import Path
     
-    # Verify using CLI commands
-    verify_ingestion_cli()
+    # Connect to Redis
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+    
+    try:
+        # Clear existing data
+        logger.info("Clearing existing data...")
+        r.flushdb()  # This will clear all data in the current Redis database
+        
+        # Drop existing index if it exists
+        try:
+            r.execute_command("FT.DROPINDEX docs")
+            logger.info("Dropped existing index")
+        except Exception as e:
+            logger.info("No existing index to drop")
+        
+        # Verify data directory exists
+        data_dir = Path('data')
+        if not data_dir.exists():
+            logger.error("Data directory not found!")
+            return False
+            
+        # Load and process documents
+        logger.info("Loading documents...")
+        documents = SimpleDirectoryReader('data').load_data()
+        
+        # Create new ingestion pipeline with updated schema
+        doc_ingestion_pipeline = IngestionPipeline(
+            transformations=[
+                SentenceSplitter(),
+                embed_model,
+            ],
+            docstore=RedisDocumentStore.from_host_and_port(
+                REDIS_HOST, REDIS_PORT, namespace="doc-store"
+            ),
+            vector_store=RedisVectorStore(
+                schema=custom_schema,
+                redis_url=f"redis://{REDIS_HOST}:{REDIS_PORT}",
+            ),
+            cache=IngestionCache(
+                cache=RedisCache.from_host_and_port(REDIS_HOST, REDIS_PORT),
+                collection="doc-cache",
+            ),
+            docstore_strategy=DocstoreStrategy.UPSERTS,
+        )
+        
+        # Run ingestion pipeline
+        logger.info("Starting document ingestion...")
+        doc_ingestion_pipeline.run(documents=documents, show_progress=True)
+        
+        # Verify ingestion
+        verify_ingestion_cli()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error during re-ingestion: {str(e)}")
+        return False
+
+if __name__ == "__main__":
+    # Run re-ingestion
+    success = clear_and_reingest()
+    if success:
+        logger.info("Re-ingestion completed successfully!")
+    else:
+        logger.error("Re-ingestion failed!")

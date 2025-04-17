@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from datetime import timedelta, datetime
 import logging
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +41,8 @@ class RAGWorkflow:
         self._end_time = None
         self._attempt = 0
         self._max_attempts = 3
+        self._is_processing = False
+        self._min_response_length = 100  # Minimum acceptable response length
         logger.info("RAGWorkflow initialized")
 
     def _log_event(self, event_type: str, details: dict = None):
@@ -56,9 +59,15 @@ class RAGWorkflow:
         if not response or not isinstance(response, str):
             return False
         
+        # Check minimum length
+        if len(response.strip()) < self._min_response_length:
+            logger.warning(f"Response too short: {len(response.strip())} characters")
+            return False
+            
         # Check for repetitive content
         words = response.lower().split()
-        if len(words) < 5:
+        if len(words) < 10:  # Minimum word count
+            logger.warning(f"Response has too few words: {len(words)}")
             return False
             
         # Check for excessive repetition
@@ -69,75 +78,87 @@ class RAGWorkflow:
         
         for word, freq in word_freq.items():
             if freq > len(words) * 0.3 and word not in {'the', 'and', 'for', 'with'}:
+                logger.warning(f"Excessive word repetition: {word} appears {freq} times")
                 return False
         
         return True
 
     @workflow.run
     async def run(self, params: RAGWorkflowParams) -> str:
-        self._start_time = workflow.now()
-        self._status = "processing"
-        self._query = params.query
-        self._log_event("workflow_started", {
-            "query": params.query,
-            "force_refresh": params.force_refresh
-        })
-        
-        while self._attempt < self._max_attempts:
-            try:
-                self._attempt += 1
-                self._log_event("query_processing_started", {"attempt": self._attempt})
-                
-                # Execute the RAG activity
-                response = await workflow.execute_activity(
-                    "process_rag_query",
-                    params,
-                    start_to_close_timeout=timedelta(seconds=60),
-                    task_queue="rag-task-queue",
-                    retry_policy=RetryPolicy(
-                        maximum_attempts=1,  # Don't retry at activity level
-                        initial_interval=timedelta(seconds=1)
-                    )
-                )
-                
-                # Validate response
-                if self._validate_response(response):
-                    self._response = response
-                    self._log_event("response_generated", {
-                        "response_length": len(response),
-                        "attempt": self._attempt
-                    })
-                    self._status = "completed"
-                    break
-                else:
-                    self._log_event("invalid_response", {
-                        "attempt": self._attempt,
-                        "response_length": len(response) if response else 0
-                    })
-                    # Force cache refresh on next attempt
-                    params.force_refresh = True
+        # Check if already processing
+        if self._is_processing:
+            logger.warning("Workflow already processing, skipping duplicate request")
+            return self._response
+            
+        try:
+            self._is_processing = True
+            self._start_time = workflow.now()
+            self._status = "processing"
+            self._query = params.query
+            self._log_event("workflow_started", {
+                "query": params.query,
+                "force_refresh": params.force_refresh
+            })
+            
+            while self._attempt < self._max_attempts:
+                try:
+                    self._attempt += 1
+                    self._log_event("query_processing_started", {"attempt": self._attempt})
                     
-            except Exception as e:
-                self._log_event("attempt_failed", {
-                    "attempt": self._attempt,
-                    "error": str(e)
-                })
-                if self._attempt >= self._max_attempts:
-                    self._status = "failed"
-                    self._response = f"Error: Failed to generate valid response after {self._max_attempts} attempts"
-                    self._log_event("error_occurred", {"error": str(e)})
-                    break
-        
-        self._end_time = workflow.now()
-        duration = (self._end_time - self._start_time).total_seconds()
-        self._log_event("workflow_completed", {
-            "status": self._status,
-            "duration_seconds": duration,
-            "response_length": len(self._response),
-            "attempts": self._attempt
-        })
-        
-        return self._response
+                    # Execute the RAG activity with increased timeout
+                    response = await workflow.execute_activity(
+                        "process_rag_query",
+                        params,
+                        start_to_close_timeout=timedelta(seconds=90),  # Increased timeout
+                        task_queue="rag-task-queue",
+                        retry_policy=RetryPolicy(
+                            maximum_attempts=1,
+                            initial_interval=timedelta(seconds=1)
+                        )
+                    )
+                    
+                    # Validate response
+                    if self._validate_response(response):
+                        self._response = response
+                        self._log_event("response_generated", {
+                            "response_length": len(response),
+                            "attempt": self._attempt
+                        })
+                        self._status = "completed"
+                        break
+                    else:
+                        self._log_event("invalid_response", {
+                            "attempt": self._attempt,
+                            "response_length": len(response) if response else 0
+                        })
+                        # Force cache refresh and increase timeout on next attempt
+                        params.force_refresh = True
+                        await asyncio.sleep(1)  # Add small delay between attempts
+                        
+                except Exception as e:
+                    self._log_event("attempt_failed", {
+                        "attempt": self._attempt,
+                        "error": str(e)
+                    })
+                    if self._attempt >= self._max_attempts:
+                        self._status = "failed"
+                        self._response = f"Error: Failed to generate valid response after {self._max_attempts} attempts"
+                        self._log_event("error_occurred", {"error": str(e)})
+                        break
+            
+            self._end_time = workflow.now()
+            duration = (self._end_time - self._start_time).total_seconds()
+            self._log_event("workflow_completed", {
+                "status": self._status,
+                "duration_seconds": duration,
+                "response_length": len(self._response),
+                "attempts": self._attempt
+            })
+            
+            return self._response
+            
+        finally:
+            self._is_processing = False
 
     @workflow.query
     def get_status(self) -> str:

@@ -79,100 +79,102 @@ REDIS_PORT = 6379
 logger = logging.getLogger(__name__)
 
 def build_rag_agent(vector_store):
-    # Create retriever with similarity top-k
-    retriever = VectorIndexRetriever(
-        index=VectorStoreIndex.from_vector_store(vector_store),
-        similarity_top_k=3
-    )
+    """Build a RAG agent with improved configuration."""
+    # Define the system prompt
+    system_prompt = """You are a specialized assistant for the 2022 Chevy Colorado. 
+    Your task is to provide direct, factual information about the vehicle's features, specifications, and options.
+    DO NOT engage in general conversation or roleplay.
+    DO NOT include conversation history or examples in your responses.
+    DO NOT use phrases like "Here's how to use the tool" or "Let me show you an example".
+    ALWAYS provide direct answers about the Chevy Colorado.
+    If you don't know the answer, say "I don't have information about that specific feature"."""
 
-    # Create response synthesizer
-    response_synthesizer = get_response_synthesizer(
-        response_mode="compact",
-        use_async=True
-    )
-
-    # Create query engine
-    query_engine = RetrieverQueryEngine(
-        retriever=retriever,
-        response_synthesizer=response_synthesizer,
-        node_postprocessors=[]
-    )
-
-    # Create agent tools
+    # Define the tools
     tools = [
-        QueryEngineTool(
-            query_engine=query_engine,
-            metadata=ToolMetadata(
-                name="car_manual",
-                description=(
-                    "This tool provides ONLY factual information about the 2022 Chevy Colorado. "
-                    "Use it to look up specific features, specifications, and details from the manual. "
-                    "Do not engage in conversation or discuss other vehicles. "
-                    "Return direct, factual answers about the 2022 Chevy Colorado only."
-                )
-            ),
+        Tool(
+            name="Car Manual",
+            func=lambda query: vector_store.similarity_search(query, k=3),
+            description="""Use this tool to look up specific features, specifications, and details about the 2022 Chevy Colorado.
+            Input should be a direct question about the vehicle.
+            The tool will return relevant information from the manual.
+            DO NOT include conversation examples or tool usage instructions in the response.""",
         )
     ]
 
-    # Create ReAct agent with system message
+    # Initialize the LLM with stricter parameters
+    llm = HuggingFaceLLM(
+        model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        tokenizer_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        context_window=2048,
+        max_new_tokens=512,
+        generate_kwargs={"temperature": 0.1, "do_sample": False},
+        device_map="auto",
+        tokenizer_kwargs={"max_length": 2048},
+    )
+
+    # Create the agent with improved configuration
     agent = ReActAgent.from_tools(
         tools,
         llm=llm,
         verbose=True,
-        system_message=ChatMessage(
-            role=MessageRole.SYSTEM,
-            content=(
-                "You are a specialized tool that ONLY provides information about the 2022 Chevy Colorado. "
-                "Your responses must ONLY contain factual details from the car manual. "
-                "Do not engage in conversation, roleplay, or discuss other vehicles. "
-                "If asked about anything not related to the 2022 Chevy Colorado, "
-                "respond with: 'I can only provide information about the 2022 Chevy Colorado.'"
-            )
-        )
+        system_prompt=system_prompt,
+        max_iterations=3,
+        handle_parsing_errors=True,
     )
 
     return agent
 
-def chat_with_agent(agent, query: str, context: str | None = None) -> str:
+def chat_with_agent(agent, query: str, context: Optional[str] = None) -> str:
+    """Chat with the agent and validate the response."""
     try:
-        # If context is provided, prepend it to the query
+        # Prepare the query
         if context:
-            enhanced_query = f"Context: {context}\nQuestion: {query}"
-            logger.info(f"Enhanced query with context: {enhanced_query}")
-            response = agent.chat(enhanced_query)
+            full_query = f"Context: {context}\n\nQuestion: {query}"
         else:
-            logger.info(f"Processing query without context: {query}")
-            response = agent.chat(query)
+            full_query = query
+
+        # Get response from agent
+        response = agent.chat(full_query)
+
+        # Extract the actual answer
+        if isinstance(response, str):
+            answer = response
+        else:
+            answer = str(response)
+
+        # Clean up the response
+        answer = answer.strip()
         
-        # Extract the final answer from the ReAct agent's response
-        if hasattr(response, 'response'):
-            response_text = response.response
+        # Remove any conversation history or examples
+        if "User:" in answer or "Assistant:" in answer:
+            # Extract only the last answer
+            parts = answer.split("Answer:")
+            if len(parts) > 1:
+                answer = parts[-1].strip()
+            else:
+                parts = answer.split("Final Answer:")
+                if len(parts) > 1:
+                    answer = parts[-1].strip()
+                else:
+                    # If no clear answer marker, take the last line
+                    lines = answer.split("\n")
+                    answer = lines[-1].strip()
+
+        # Validate the response
+        if len(answer) < 20:  # Minimum length check
+            raise ValueError("Response too short")
             
-            # If response contains "Answer: ", extract everything after it
-            if "Answer: " in response_text:
-                final_answer = response_text.split("Answer: ")[-1].strip()
-                return final_answer
+        if "Here's how" in answer or "Let me show" in answer:
+            raise ValueError("Response contains example text")
             
-            # If response contains "Final Answer: ", extract everything after it
-            if "Final Answer: " in response_text:
-                final_answer = response_text.split("Final Answer: ")[-1].strip()
-                return final_answer
-            
-            # Remove any conversation or roleplay patterns
-            response_text = response_text.strip()
-            if "User:" in response_text or "Assistant:" in response_text:
-                return "Error: Invalid response format. Please try again."
-            
-            return response_text.strip()
-            
-        elif hasattr(response, 'content'):
-            return response.content.strip()
-        else:
-            logger.error(f"Unexpected response type: {type(response)}")
-            return "Error: Unexpected response format"
+        if "User:" in answer or "Assistant:" in answer:
+            raise ValueError("Response contains conversation history")
+
+        return answer
+
     except Exception as e:
-        logger.error(f"Error processing query: {str(e)}")
-        return f"Error processing query: {str(e)}"
+        logger.error(f"Error in chat_with_agent: {str(e)}")
+        raise
 
 # Initialize semantic cache with BGE embeddings
 cache = SemanticCache(
