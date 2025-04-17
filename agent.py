@@ -15,6 +15,8 @@ from redisvl.extensions.llmcache import SemanticCache
 from redisvl.utils.vectorize import HFTextVectorizer
 from pydantic import BaseModel
 import logging
+from typing import Optional
+import re
 
 # Initialize embedding model
 embed_model = HuggingFaceEmbedding(
@@ -174,50 +176,132 @@ def chat_with_agent(agent, query: str, context: str | None = None) -> str:
 
 # Initialize semantic cache with BGE embeddings
 cache = SemanticCache(
-    name="chevy_cache",
+    name="rag_cache",
     prefix="cache",
-    distance_threshold=0.2,
-    ttl=300,  # Increased TTL to 5 minutes
+    distance_threshold=0.15,
+    ttl=120,  # 2 minutes TTL
     vectorizer=HFTextVectorizer(model="BAAI/bge-small-en-v1.5")
 )
 
-def refresh_cache():
-    """Clear the semantic cache to force fresh responses"""
+def debug_cache_operation(operation: str, query: str, response: Optional[str] = None, error: Optional[Exception] = None):
+    """Log detailed information about cache operations."""
+    log_data = {
+        "operation": operation,
+        "query": query,
+        "response_length": len(response) if response else 0,
+        "response_preview": response[:100] + "..." if response else None,
+        "error": str(error) if error else None,
+        "cache_size": cache.size() if hasattr(cache, 'size') else "unknown",
+        "cache_stats": cache.stats() if hasattr(cache, 'stats') else "unknown"
+    }
+    logger.info(f"Cache Debug: {log_data}")
+
+def validate_cached_response(response: str) -> tuple[bool, str]:
+    """Validate a cached response and return (is_valid, reason)."""
+    if not response or not isinstance(response, str):
+        return False, "Empty or invalid response type"
+        
+    # Basic validation
+    if len(response) < 20 or len(response) > 1000:
+        return False, f"Invalid length: {len(response)}"
+        
+    words = response.split()
+    if len(words) < 5 or len(words) > 200:
+        return False, f"Invalid word count: {len(words)}"
+        
+    # Check for corruption patterns
+    if response.count("or") > 5:
+        return False, f"Excessive 'or' repetition: {response.count('or')}"
+    if response.count("ing") > 10:
+        return False, f"Excessive 'ing' repetition: {response.count('ing')}"
+    if response.count("tion") > 10:
+        return False, f"Excessive 'tion' repetition: {response.count('tion')}"
+        
+    # Check word variety
+    unique_words = len(set(word.lower() for word in words))
+    if unique_words < len(words) * 0.4:
+        return False, f"Low word variety: {unique_words}/{len(words)} unique words"
+        
+    # Check for specific corruption patterns
+    if re.search(r'(\w+)\1{2,}', response):
+        return False, "Repeated word pattern detected"
+    if re.search(r'[^\w\s.,!?-]', response):
+        return False, "Unusual characters detected"
+    if re.search(r'\b\w{15,}\b', response):
+        return False, "Very long words detected"
+        
+    return True, "Valid response"
+
+def get_cached_response(query: str) -> Optional[str]:
+    """Get a validated cached response with detailed logging."""
+    try:
+        response = cache.get(query)
+        if response:
+            is_valid, reason = validate_cached_response(response)
+            if is_valid:
+                debug_cache_operation("cache_hit", query, response)
+                return response
+            else:
+                debug_cache_operation("invalid_cache_hit", query, response, Exception(reason))
+                clear_cache()  # Clear cache on invalid response
+        return None
+    except Exception as e:
+        debug_cache_operation("cache_error", query, error=e)
+        return None
+
+def cache_response(query: str, response: str) -> bool:
+    """Cache a validated response with detailed logging."""
+    try:
+        is_valid, reason = validate_cached_response(response)
+        if is_valid:
+            cache.set(query, response)
+            debug_cache_operation("cache_store", query, response)
+            return True
+        else:
+            debug_cache_operation("invalid_cache_store", query, response, Exception(reason))
+            return False
+    except Exception as e:
+        debug_cache_operation("cache_error", query, response, e)
+        return False
+
+def clear_cache() -> bool:
+    """Clear the cache with detailed logging."""
     try:
         cache.flush()
-        logger.info("Successfully cleared semantic cache")
+        debug_cache_operation("cache_clear", "all")
         return True
     except Exception as e:
-        logger.error(f"Error clearing cache: {str(e)}")
+        debug_cache_operation("cache_error", "clear", error=e)
         return False
 
 def invoke_agent(prompt: str, force_refresh: bool = False) -> str:
     """
-    Invoke the agent with optional cache refresh
-    Args:
-        prompt: The query prompt
-        force_refresh: If True, bypass cache and store new response
+    Invoke the agent with improved cache handling and debugging.
     """
-    if force_refresh:
-        refresh_cache()
-    
-    if not force_refresh and (cached_result := cache.check(prompt=prompt)):
-        response = cached_result[0]['response']
-        # Validate cached response
-        if 'car car car' in response.lower() or len(set(response.split())) < 5:
-            logger.warning("Found corrupted cached response, forcing refresh")
-            refresh_cache()
-            return invoke_agent(prompt, force_refresh=True)
-        return response
+    try:
+        if force_refresh:
+            clear_cache()
+            debug_cache_operation("force_refresh", prompt)
         
-    response = agent.chat(prompt)
-    response_content = response.response if hasattr(response, 'response') else str(response)
-    
-    # Validate response before caching
-    if 'car car car' not in response_content.lower() and len(set(response_content.split())) >= 5:
-        cache.store(prompt=prompt, response=response_content)
-    
-    return response_content
+        # Try to get cached response
+        if not force_refresh:
+            cached_response = get_cached_response(prompt)
+            if cached_response:
+                return cached_response
+        
+        # Generate new response
+        response = agent.chat(prompt)
+        response_content = response.response if hasattr(response, 'response') else str(response)
+        
+        # Cache the response if valid
+        if cache_response(prompt, response_content):
+            debug_cache_operation("response_cached", prompt, response_content)
+        
+        return response_content
+        
+    except Exception as e:
+        debug_cache_operation("agent_error", prompt, error=e)
+        return f"Error: {str(e)}"
 
 class QueryRequest(BaseModel):
     query: str
