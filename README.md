@@ -1,4 +1,4 @@
-# Redis Vector Library Demo with LlamaIndex
+# Redis Vector Library, Temporal Demo with LlamaIndex
 
 A demonstration of using Redis as a vector store with LlamaIndex for RAG (Retrieval Augmented Generation) applications. This project showcases how to build a question-answering system using Redis Vector Library, LlamaIndex, and open-source language models, orchestrated by Temporal workflows.
 
