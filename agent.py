@@ -23,19 +23,19 @@ embed_model = HuggingFaceEmbedding(
     model_name="BAAI/bge-small-en-v1.5"
 )
 
-# Initialize LLM with TinyLlama
+# Initialize LLM with stricter parameters
 llm = HuggingFaceLLM(
     model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     tokenizer_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     device_map="auto",
-    max_new_tokens=256,
+    max_new_tokens=256,  # Reduced from 512 to prevent token overflow
     context_window=2048,
     generate_kwargs={
         "temperature": 0.1,
-        "do_sample": True,
-        "top_k": 30,
-        "top_p": 0.9,
-        "repetition_penalty": 1.1
+        "do_sample": False,  # Disable sampling for more deterministic output
+        "top_k": 1,  # Only use the most likely token
+        "repetition_penalty": 1.2,  # Penalize repetition
+        "no_repeat_ngram_size": 3  # Prevent repeating phrases
     },
     system_prompt=(
         "You are a specialized assistant that ONLY provides factual information about the Chevy Colorado 2022. "
@@ -80,49 +80,110 @@ logger = logging.getLogger(__name__)
 
 def build_rag_agent(vector_store):
     """Build a RAG agent with improved configuration."""
-    # Define the system prompt
-    system_prompt = """You are a specialized assistant for the 2022 Chevy Colorado. 
-    Your task is to provide direct, factual information about the vehicle's features, specifications, and options.
-    DO NOT engage in general conversation or roleplay.
-    DO NOT include conversation history or examples in your responses.
-    DO NOT use phrases like "Here's how to use the tool" or "Let me show you an example".
-    ALWAYS provide direct answers about the Chevy Colorado.
-    If you don't know the answer, say "I don't have information about that specific feature"."""
+    # Create retriever with similarity top-k
+    retriever = VectorIndexRetriever(
+        index=VectorStoreIndex.from_vector_store(vector_store),
+        similarity_top_k=3
+    )
 
-    # Define the tools
+    # Create response synthesizer with compact mode
+    response_synthesizer = get_response_synthesizer(
+        response_mode="compact",
+        use_async=True
+    )
+
+    # Create query engine
+    query_engine = RetrieverQueryEngine(
+        retriever=retriever,
+        response_synthesizer=response_synthesizer,
+        node_postprocessors=[]
+    )
+
+    # Create agent tools
     tools = [
-        Tool(
-            name="Car Manual",
-            func=lambda query: vector_store.similarity_search(query, k=3),
-            description="""Use this tool to look up specific features, specifications, and details about the 2022 Chevy Colorado.
-            Input should be a direct question about the vehicle.
-            The tool will return relevant information from the manual.
-            DO NOT include conversation examples or tool usage instructions in the response.""",
+        QueryEngineTool(
+            query_engine=query_engine,
+            metadata=ToolMetadata(
+                name="car_manual",
+                description=(
+                    "Use this tool to get information about the 2022 Chevy Colorado. "
+                    "The tool will search the car manual and return relevant information. "
+                    "No special formatting is required - just ask your question directly."
+                )
+            ),
         )
     ]
 
-    # Initialize the LLM with stricter parameters
-    llm = HuggingFaceLLM(
-        model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        tokenizer_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        context_window=2048,
-        max_new_tokens=512,
-        generate_kwargs={"temperature": 0.1, "do_sample": False},
-        device_map="auto",
-        tokenizer_kwargs={"max_length": 2048},
-    )
-
-    # Create the agent with improved configuration
+    # Create ReAct agent with system message
     agent = ReActAgent.from_tools(
         tools,
         llm=llm,
         verbose=True,
-        system_prompt=system_prompt,
-        max_iterations=3,
-        handle_parsing_errors=True,
+        system_message=ChatMessage(
+            role=MessageRole.SYSTEM,
+            content=(
+                "You are a helpful assistant that provides information about the 2022 Chevy Colorado. "
+                "When answering questions:\n"
+                "1. Use the car_manual tool to find relevant information\n"
+                "2. Return direct, factual answers without any special formatting\n"
+                "3. Do not include any thought process or action formatting\n"
+                "4. If you can't find the information, say so directly\n"
+                "5. Keep your answers concise and focused on the question"
+            )
+        )
     )
 
     return agent
+
+def validate_llm_response(response: str) -> tuple[bool, str]:
+    """Validate LLM responses with minimal restrictions."""
+    if not response or not isinstance(response, str):
+        return False, "Empty or invalid response type"
+        
+    # Basic validation for LLM responses
+    if len(response.strip()) < 5:  # Very minimal length requirement
+        return False, f"Response too short: {len(response)} characters"
+        
+    # Only check for obvious corruption
+    if re.search(r'(\w+)\1{4,}', response):  # Only flag extreme repetition
+        return False, "Response contains extreme repetition"
+        
+    # Check for conversation history
+    if "User:" in response or "Assistant:" in response:
+        return False, "Response contains conversation history"
+        
+    return True, "Valid response"
+
+def validate_cached_response(response: str) -> tuple[bool, str]:
+    """Validate cached responses with stricter rules."""
+    if not response or not isinstance(response, str):
+        return False, "Empty or invalid response type"
+        
+    # Stricter validation for cached responses
+    if len(response) < 10:
+        return False, f"Cached response too short: {len(response)} characters"
+    if len(response) > 2000:
+        return False, f"Cached response too long: {len(response)} characters"
+        
+    words = response.split()
+    if len(words) < 3:
+        return False, f"Too few words in cached response: {len(words)}"
+        
+    # Check for corruption patterns in cache
+    if response.count("or") > 10:
+        return False, f"Excessive 'or' repetition in cache: {response.count('or')}"
+    if response.count("ing") > 15:
+        return False, f"Excessive 'ing' repetition in cache: {response.count('ing')}"
+    if response.count("tion") > 15:
+        return False, f"Excessive 'tion' repetition in cache: {response.count('tion')}"
+        
+    # Check for specific corruption patterns
+    if re.search(r'(\w+)\1{3,}', response):
+        return False, "Repeated word pattern in cache"
+    if re.search(r'[^\w\s.,!?-]', response):
+        return False, "Unusual characters in cache"
+        
+    return True, "Valid cached response"
 
 def chat_with_agent(agent, query: str, context: Optional[str] = None) -> str:
     """Chat with the agent and validate the response."""
@@ -135,12 +196,19 @@ def chat_with_agent(agent, query: str, context: Optional[str] = None) -> str:
 
         # Get response from agent
         response = agent.chat(full_query)
+        logger.info(f"Raw response: {response}")
 
         # Extract the actual answer
         if isinstance(response, str):
             answer = response
         else:
-            answer = str(response)
+            # Try different ways to extract the response
+            if hasattr(response, 'response'):
+                answer = response.response
+            elif hasattr(response, 'content'):
+                answer = response.content
+            else:
+                answer = str(response)
 
         # Clean up the response
         answer = answer.strip()
@@ -160,21 +228,31 @@ def chat_with_agent(agent, query: str, context: Optional[str] = None) -> str:
                     lines = answer.split("\n")
                     answer = lines[-1].strip()
 
-        # Validate the response
-        if len(answer) < 20:  # Minimum length check
-            raise ValueError("Response too short")
-            
-        if "Here's how" in answer or "Let me show" in answer:
-            raise ValueError("Response contains example text")
-            
-        if "User:" in answer or "Assistant:" in answer:
-            raise ValueError("Response contains conversation history")
+        # Remove any special tokens or formatting
+        answer = re.sub(r'<.*?>', '', answer)  # Remove HTML tags
+        answer = re.sub(r'\[.*?\]', '', answer)  # Remove markdown links
+        answer = re.sub(r'\{.*?\}', '', answer)  # Remove JSON objects
+        answer = re.sub(r'\(.*?\)', '', answer)  # Remove parentheses
+        answer = re.sub(r'\*\*.*?\*\*', '', answer)  # Remove bold text
+        answer = re.sub(r'\*.*?\*', '', answer)  # Remove italic text
+        answer = re.sub(r'`.*?`', '', answer)  # Remove code blocks
+        
+        # Normalize whitespace
+        answer = re.sub(r'\s+', ' ', answer)
+        answer = answer.strip()
 
+        # Validate the LLM response with minimal restrictions
+        is_valid, reason = validate_llm_response(answer)
+        if not is_valid:
+            logger.warning(f"Invalid LLM response: {reason}")
+            return f"Error: Could not generate a valid response. {reason}"
+
+        logger.info(f"Final answer: {answer}")
         return answer
 
     except Exception as e:
         logger.error(f"Error in chat_with_agent: {str(e)}")
-        raise
+        return f"Error: Could not generate a valid response. Please try again with a different question."
 
 # Initialize semantic cache with BGE embeddings
 cache = SemanticCache(
@@ -198,44 +276,8 @@ def debug_cache_operation(operation: str, query: str, response: Optional[str] = 
     }
     logger.info(f"Cache Debug: {log_data}")
 
-def validate_cached_response(response: str) -> tuple[bool, str]:
-    """Validate a cached response and return (is_valid, reason)."""
-    if not response or not isinstance(response, str):
-        return False, "Empty or invalid response type"
-        
-    # Basic validation
-    if len(response) < 20 or len(response) > 1000:
-        return False, f"Invalid length: {len(response)}"
-        
-    words = response.split()
-    if len(words) < 5 or len(words) > 200:
-        return False, f"Invalid word count: {len(words)}"
-        
-    # Check for corruption patterns
-    if response.count("or") > 5:
-        return False, f"Excessive 'or' repetition: {response.count('or')}"
-    if response.count("ing") > 10:
-        return False, f"Excessive 'ing' repetition: {response.count('ing')}"
-    if response.count("tion") > 10:
-        return False, f"Excessive 'tion' repetition: {response.count('tion')}"
-        
-    # Check word variety
-    unique_words = len(set(word.lower() for word in words))
-    if unique_words < len(words) * 0.4:
-        return False, f"Low word variety: {unique_words}/{len(words)} unique words"
-        
-    # Check for specific corruption patterns
-    if re.search(r'(\w+)\1{2,}', response):
-        return False, "Repeated word pattern detected"
-    if re.search(r'[^\w\s.,!?-]', response):
-        return False, "Unusual characters detected"
-    if re.search(r'\b\w{15,}\b', response):
-        return False, "Very long words detected"
-        
-    return True, "Valid response"
-
 def get_cached_response(query: str) -> Optional[str]:
-    """Get a validated cached response with detailed logging."""
+    """Get a validated cached response."""
     try:
         response = cache.get(query)
         if response:
@@ -252,7 +294,7 @@ def get_cached_response(query: str) -> Optional[str]:
         return None
 
 def cache_response(query: str, response: str) -> bool:
-    """Cache a validated response with detailed logging."""
+    """Cache a validated response."""
     try:
         is_valid, reason = validate_cached_response(response)
         if is_valid:
