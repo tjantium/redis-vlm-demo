@@ -1,6 +1,15 @@
 # Redis Vector Library, Temporal Demo with LlamaIndex
 
+> **Note**: This repository is currently under active development. Features and documentation may change as we continue to improve the implementation.
+
 A demonstration of using Redis as a vector store with LlamaIndex for RAG (Retrieval Augmented Generation) applications. This project showcases how to build a question-answering system using Redis Vector Library, LlamaIndex, and open-source language models, orchestrated by Temporal workflows.
+
+## Resources
+
+- [RedisVL Installation Guide](https://redis.io/docs/latest/integrate/redisvl/overview/installation/)
+- [Redis Vector Database Benchmarks](https://redis.io/blog/benchmarking-results-for-vector-databases/)
+- [Redis Semantic Caching](https://redis.io/blog/what-is-semantic-caching/)
+- [IBM React Agent](https://www.ibm.com/think/topics/react-agent)
 
 ## Architecture
 
