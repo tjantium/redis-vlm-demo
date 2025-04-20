@@ -10,6 +10,7 @@ A demonstration of using Redis as a vector store with LlamaIndex for RAG (Retrie
 - [Redis Vector Database Benchmarks](https://redis.io/blog/benchmarking-results-for-vector-databases/)
 - [Redis Semantic Caching](https://redis.io/blog/what-is-semantic-caching/)
 - [IBM React Agent](https://www.ibm.com/think/topics/react-agent)
+- [Demo Video](https://www.loom.com/share/873f9cb22df344709968213eb09d091c?sid=dcc6cd2d-a6f6-4ace-ac69-516d035a76ba)
 
 ## Architecture
 
@@ -152,15 +153,6 @@ curl -X POST http://localhost:8000/query \
 sample queries 
 
 ```bash
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Tell me about the car features",
-    "context": "Focus on the interior comfort and entertainment systems"
-  }'
-
------
-
 
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
@@ -300,3 +292,29 @@ lsof -i :8000  # FastAPI
 - [ ] Advanced Configuration Guide
 - [ ] Docker Compose Setup
 - [ ] Temporal Workflow Monitoring Dashboard
+
+## Running the RAG-UI
+
+1. **Navigate to the RAG-UI directory**
+```bash
+cd rag-ui
+```
+
+2. **Install dependencies**
+```bash
+npm install
+```
+
+3. **Start the development server**
+```bash
+npm run dev
+```
+
+4. **Access the UI**
+Open your browser and navigate to `http://localhost:3000`
+
+The RAG-UI provides a user-friendly interface to:
+- Submit queries to the RAG system
+- View query history
+- Monitor workflow status
+- Visualize vector search results
