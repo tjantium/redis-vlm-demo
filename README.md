@@ -82,7 +82,7 @@ The architecture consists of three main components:
 
 1. **Clone the Repository**
 ```bash
-git clone https://github.com/yourusername/redis-vlm-demo.git
+git clone https://github.com/tjantium/redis-vlm-demo.git
 cd redis-vlm-demo
 ```
 
