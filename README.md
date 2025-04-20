@@ -23,11 +23,13 @@ graph TD
 
     subgraph Temporal
         WF[RAG Workflow]
-        ACT[RAG Activity]
+        ACT[RAG Activities]
         WK[Worker]
     end
 
     subgraph RAG Pipeline
+        VAL[Context Validation]
+        SIM[Similarity Check]
         LLM[TinyLlama LLM]
         EMB[BGE Embeddings]
         VS[Redis Vector Store]
@@ -38,6 +40,8 @@ graph TD
     UI -->|HTTP Request| API
     API -->|Start Workflow| WF
     WF -->|Execute| ACT
+    ACT -->|Validate| VAL
+    ACT -->|Check| SIM
     ACT -->|Process| WK
     WK -->|Query| LLM
     WK -->|Embed| EMB
@@ -45,14 +49,18 @@ graph TD
     WK -->|Cache| CACHE
     VS -->|Vectors| EMB
     CACHE -->|Cached Results| WK
+    VAL -->|Valid Context| SIM
+    SIM -->|High Similarity| WK
 
     %% Styling
     classDef default fill:#f9f9f9,stroke:#333,stroke-width:2px;
     classDef temporal fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     classDef rag fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    classDef validation fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
     
     class WF,ACT,WK temporal;
     class LLM,EMB,VS,CACHE rag;
+    class VAL,SIM validation;
 ```
 
 The architecture consists of three main components:

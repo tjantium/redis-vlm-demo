@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 from tenacity import retry, stop_after_attempt, wait_exponential
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -126,7 +127,30 @@ class RAGActivities:
     def __init__(self):
         self.agent = None
         self.vector_store = None
+        self.similarity_threshold = 0.7  # Set similarity threshold
         logger.info("RAGActivities initialized")
+
+    async def _check_similarity(self, query: str, context: Optional[str]) -> bool:
+        """Check if the retrieved context meets similarity threshold"""
+        if not context:
+            return False
+            
+        try:
+            # Get similarity score from vector store
+            similarity_score = await self.vector_store.similarity_search_with_score(
+                query,
+                k=1,
+                score_threshold=self.similarity_threshold
+            )
+            
+            if not similarity_score or similarity_score[0][1] < self.similarity_threshold:
+                logger.info(f"Similarity score {similarity_score[0][1] if similarity_score else 'None'} below threshold {self.similarity_threshold}")
+                return False
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error checking similarity: {str(e)}")
+            return False
 
     async def _get_cached_response(self, query: str, force_refresh: bool = False) -> Optional[str]:
         """Try to get a response from cache"""
@@ -154,22 +178,89 @@ class RAGActivities:
                 logger.error(f"Failed to store in cache: {str(e)}")
 
     @activity.defn
-    async def process_rag_query(self, params: RAGActivityParams) -> str:
+    async def validate_context(self, query: str, context: Optional[str], force_refresh: bool) -> bool:
+        """Activity to validate context relevance"""
+        start_time = time.time()
         try:
-            logger.info(f"Processing RAG query: {params.query}")
-            if params.context:
-                logger.info(f"With context: {params.context}")
+            logger.info(f"Starting context validation for query: {query}")
+            
+            # Check if context is empty or too short
+            if not context or not isinstance(context, str):
+                logger.info("Context validation failed: No context provided")
+                return False
+                
+            if len(context.strip()) < 10:
+                logger.info(f"Context validation failed: Too short ({len(context.strip())} characters)")
+                return False
+                
+            # Check for meaningful content
+            words = context.lower().split()
+            if len(words) < 5:
+                logger.info(f"Context validation failed: Insufficient words ({len(words)} words)")
+                return False
+                
+            duration = time.time() - start_time
+            logger.info(f"Context validation passed in {duration:.2f}s with {len(words)} words")
+            return True
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"Context validation error after {duration:.2f}s: {str(e)}")
+            return False
+
+    @activity.defn
+    async def check_similarity(self, query: str, context: Optional[str], force_refresh: bool) -> bool:
+        """Activity to check context similarity"""
+        start_time = time.time()
+        try:
+            logger.info(f"Starting similarity check for query: {query}")
+            
+            if not self.vector_store:
+                logger.info("Initializing vector store for similarity check...")
+                self.vector_store = doc_ingestion_pipeline.vector_store
+                
+            # Get similarity score from vector store
+            similarity_score = await self.vector_store.similarity_search_with_score(
+                query,
+                k=1,
+                score_threshold=self.similarity_threshold
+            )
+            
+            duration = time.time() - start_time
+            
+            if not similarity_score or similarity_score[0][1] < self.similarity_threshold:
+                score = similarity_score[0][1] if similarity_score else None
+                logger.info(f"Similarity check failed in {duration:.2f}s: Score {score} below threshold {self.similarity_threshold}")
+                return False
+                
+            logger.info(f"Similarity check passed in {duration:.2f}s with score: {similarity_score[0][1]}")
+            return True
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"Similarity check error after {duration:.2f}s: {str(e)}")
+            return False
+
+    @activity.defn
+    async def process_rag_query(self, query: str, context: Optional[str], force_refresh: bool) -> str:
+        start_time = time.time()
+        try:
+            logger.info(f"Starting query processing for: {query}")
+            if context:
+                logger.info(f"With context length: {len(context)} characters")
             
             # Initialize agent if needed
             if not self.agent:
-                logger.info("Initializing agent...")
+                logger.info("Initializing agent for query processing...")
                 self.agent = build_rag_agent(doc_ingestion_pipeline.vector_store)
+                self.vector_store = doc_ingestion_pipeline.vector_store
                 logger.info("Agent initialized successfully")
             
             try:
                 # Try cache first
-                if cached_response := await self._get_cached_response(params.query, params.force_refresh):
-                    logger.info("Using cached response")
+                if cached_response := await self._get_cached_response(query, force_refresh):
+                    duration = time.time() - start_time
+                    logger.info(f"Query processed from cache in {duration:.2f}s")
                     return cached_response
                 
                 # If no cache hit or force refresh, query the agent
@@ -177,25 +268,29 @@ class RAGActivities:
                     asyncio.to_thread(
                         chat_with_agent,
                         self.agent,
-                        params.query,
-                        params.context
+                        query,
+                        context
                     ),
                     timeout=45.0
                 )
                 
                 # Store valid response in cache
-                await self._store_in_cache(params.query, response)
+                await self._store_in_cache(query, response)
                 
-                logger.info(f"Raw response: {response}")
+                duration = time.time() - start_time
+                logger.info(f"Query processed successfully in {duration:.2f}s, response length: {len(response)}")
                 return response
                 
             except asyncio.TimeoutError:
-                logger.error("Query processing timed out")
+                duration = time.time() - start_time
+                logger.error(f"Query processing timed out after {duration:.2f}s")
                 return "Error: Query processing timed out. Please try again."
             except Exception as e:
-                logger.error(f"Error during query processing: {str(e)}")
+                duration = time.time() - start_time
+                logger.error(f"Error during query processing after {duration:.2f}s: {str(e)}")
                 return f"Error: {str(e)}"
                 
         except Exception as e:
-            logger.error(f"Unexpected error in process_rag_query: {str(e)}")
+            duration = time.time() - start_time
+            logger.error(f"Unexpected error in process_rag_query after {duration:.2f}s: {str(e)}")
             return f"Error: {str(e)}"
