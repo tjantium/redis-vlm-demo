@@ -219,21 +219,26 @@ class RAGActivities:
                 logger.info("Initializing vector store for similarity check...")
                 self.vector_store = doc_ingestion_pipeline.vector_store
                 
-            # Get similarity score from vector store
-            similarity_score = await self.vector_store.similarity_search_with_score(
+            # Get similarity score from vector store using the correct method
+            similarity_results = await self.vector_store.similarity_search(
                 query,
-                k=1,
-                score_threshold=self.similarity_threshold
+                k=1
             )
             
             duration = time.time() - start_time
             
-            if not similarity_score or similarity_score[0][1] < self.similarity_threshold:
-                score = similarity_score[0][1] if similarity_score else None
-                logger.info(f"Similarity check failed in {duration:.2f}s: Score {score} below threshold {self.similarity_threshold}")
+            if not similarity_results:
+                logger.info(f"Similarity check failed in {duration:.2f}s: No results found")
                 return False
                 
-            logger.info(f"Similarity check passed in {duration:.2f}s with score: {similarity_score[0][1]}")
+            # Calculate similarity score (1 - distance)
+            similarity_score = 1 - similarity_results[0].score
+            
+            if similarity_score < self.similarity_threshold:
+                logger.info(f"Similarity check failed in {duration:.2f}s: Score {similarity_score} below threshold {self.similarity_threshold}")
+                return False
+                
+            logger.info(f"Similarity check passed in {duration:.2f}s with score: {similarity_score}")
             return True
             
         except Exception as e:

@@ -56,7 +56,7 @@ graph TD
     classDef default fill:#f9f9f9,stroke:#333,stroke-width:2px;
     classDef temporal fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     classDef rag fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
-    classDef validation fill:#fff3e0,stroke:#f57c00,stroke-width:3px;
+    classDef validation fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
     
     class WF,ACT,WK temporal;
     class LLM,EMB,VS,CACHE rag;
@@ -79,28 +79,6 @@ The architecture consists of three main components:
    - BGE Embeddings for text vectorization
    - Redis Vector Store for document storage
    - Semantic Cache for response optimization
-
-## Architecture Notes
-
-### Context Validation and Similarity Check
-
-The Context Validation and Similarity Check components are implemented in the following locations:
-
-1. **Context Validation** (`activities/rag_activities.py`):
-   - Implemented in the `validate_context` activity
-   - Validates the provided context against predefined rules
-   - Ensures context relevance and quality before processing
-
-2. **Similarity Check** (`activities/rag_activities.py`):
-   - Implemented in the `check_similarity` activity
-   - Compares the query and context against cached results
-   - Uses vector similarity to determine content relevance
-   - Helps prevent redundant processing of similar queries
-
-These components work together in the workflow to:
-- Filter out invalid or irrelevant contexts early in the process
-- Optimize processing by identifying similar previous queries
-- Improve response quality by ensuring context relevance
 
 ## Prerequisites
 
